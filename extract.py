@@ -1,0 +1,266 @@
+#!/usr/bin/env python3
+
+"""Extract SCOWL entries from GitHub issue ChatGPT analysis comments.
+
+Reads issues/*.json and issues/*-comments.json, finds comments containing
+"ChatGPT analyzes", extracts ```text code blocks, and outputs the SCOWL
+entries to stdout. Diagnostics go to stderr.
+"""
+
+import argparse
+import json
+import re
+import sys
+import os
+
+ISSUES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'issues')
+
+# Rough pattern to check if a line looks like a SCOWL entry.
+# e.g. "60: deplatform <v>: deplatformed, deplatforming, deplatforms"
+SCOWL_LINE_RE = re.compile(r'\d\d.*:.*[A-Za-z].*<[a-z]+>')
+
+# Match fenced code blocks: ```text or plain ```
+CODE_BLOCK_RE = re.compile(r'```(?:text)?\n(.*?)```', re.DOTALL)
+
+
+def looks_like_scowl(text):
+    """Return True if the text contains at least one SCOWL-looking line."""
+    for line in text.splitlines():
+        if SCOWL_LINE_RE.search(line):
+            return True
+    return False
+
+
+def load_issue(number):
+    path = os.path.join(ISSUES_DIR, f'{number}.json')
+    with open(path) as f:
+        return json.load(f)
+
+
+def load_comments(number):
+    path = os.path.join(ISSUES_DIR, f'{number}-comments.json')
+    if not os.path.exists(path):
+        return []
+    with open(path) as f:
+        return json.load(f)
+
+
+def get_issue_numbers():
+    """Return sorted list of issue numbers from the issues directory."""
+    numbers = set()
+    for name in os.listdir(ISSUES_DIR):
+        m = re.match(r'^(\d+)\.json$', name)
+        if m:
+            numbers.add(int(m.group(1)))
+    return sorted(numbers)
+
+
+def get_issue_labels(issue):
+    return [l['name'] for l in issue.get('labels', [])]
+
+
+def find_chatgpt_comment(comments):
+    """Return the last comment containing 'ChatGPT analyzes', or None."""
+    found = None
+    for comment in comments:
+        body = comment.get('body', '')
+        if 'ChatGPT analyzes' in body or 'ChatGPT analyzes' in body.replace('\u200b', ''):
+            found = comment
+    return found
+
+
+def find_scowl_code_block(comments):
+    """Fallback: scan comments (last first) for code blocks with SCOWL data.
+
+    Returns the text of the last code block that looks like SCOWL, or None.
+    """
+    for comment in reversed(comments):
+        body = comment.get('body', '')
+        blocks = CODE_BLOCK_RE.findall(body)
+        for block in reversed(blocks):
+            if looks_like_scowl(block):
+                return block.strip()
+    return None
+
+
+def extract_section_blocks(body, section_filter):
+    """Extract ```text code blocks from the comment body, filtered by section.
+
+    section_filter: 'extra', 'signature', 'other', or 'all'
+
+    For 'extra' and 'signature', we look for section headings (### Extra,
+    ## SCOWL entries – Extra, ### Signature, etc.) and return code blocks
+    that appear under matching headings.
+
+    For 'other', we return code blocks under headings that match neither
+    extra nor signature.
+
+    For 'all', we return all ```text code blocks.
+    """
+    if section_filter == 'all':
+        return CODE_BLOCK_RE.findall(body)
+
+    # Split body into sections based on markdown headings (##, ###, etc.)
+    # We want to associate each code block with its preceding heading.
+    # Be careful not to treat # lines inside fenced code blocks as headings.
+    lines = body.split('\n')
+    sections = []  # list of (heading_text, content_lines)
+    current_heading = ''
+    current_lines = []
+    in_code_block = False
+
+    for line in lines:
+        if line.startswith('```'):
+            in_code_block = not in_code_block
+            current_lines.append(line)
+        elif not in_code_block and re.match(r'^#{1,6}\s+', line):
+            if current_lines or current_heading:
+                sections.append((current_heading, '\n'.join(current_lines)))
+            current_heading = re.sub(r'^#{1,6}\s+', '', line).strip()
+            current_lines = []
+        else:
+            current_lines.append(line)
+
+    if current_lines or current_heading:
+        sections.append((current_heading, '\n'.join(current_lines)))
+
+    # Determine which headings match the filter
+    results = []
+    for heading, content in sections:
+        heading_lower = heading.lower()
+        match = False
+        is_extra = (('extra' in heading_lower or 'scowl' in heading_lower)
+                    and 'signature' not in heading_lower)
+        is_signature = 'signature' in heading_lower
+        if section_filter == 'extra':
+            match = is_extra
+        elif section_filter == 'signature':
+            match = is_signature
+        elif section_filter == 'other':
+            match = not is_extra and not is_signature
+        if match:
+            blocks = CODE_BLOCK_RE.findall(content)
+            results.extend(blocks)
+
+    return results
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='Extract SCOWL entries from GitHub issue ChatGPT analysis comments.')
+    parser.add_argument('--section', default='all',
+                        choices=['extra', 'signature', 'other', 'all'],
+                        help='Which code-block sections to include (default: all)')
+    parser.add_argument('--label', action='append', default=[],
+                        help='Only include issues with this label (repeatable)')
+    parser.add_argument('--exclude-label', action='append', default=[],
+                        help='Exclude issues with this label (repeatable)')
+    parser.add_argument('--issue', '--issues', dest='issues', action='append', default=[],
+                        help='Limit to specific issue numbers (comma-separated, repeatable)')
+    args = parser.parse_args()
+
+    # Parse issue numbers from comma-separated args
+    issue_filter = set()
+    for val in args.issues:
+        for part in val.split(','):
+            part = part.strip()
+            if part:
+                issue_filter.add(int(part))
+
+    all_numbers = get_issue_numbers()
+    if issue_filter:
+        numbers = [n for n in all_numbers if n in issue_filter]
+        missing = issue_filter - set(all_numbers)
+        for m in sorted(missing):
+            print(f"warning: issue {m} not found in issues directory", file=sys.stderr)
+    else:
+        numbers = all_numbers
+
+    output_blocks = []
+    processed = 0
+    skipped_label = 0
+    no_comments = 0
+    no_chatgpt = 0
+    no_codeblock = 0
+
+    for num in numbers:
+        issue = load_issue(num)
+        labels = get_issue_labels(issue)
+
+        # Label filters
+        if args.label:
+            if not all(l in labels for l in args.label):
+                skipped_label += 1
+                continue
+        if args.exclude_label:
+            if any(l in labels for l in args.exclude_label):
+                skipped_label += 1
+                continue
+
+        comments = load_comments(num)
+        if not comments:
+            print(f"issue {num}: no comments", file=sys.stderr)
+            no_comments += 1
+            continue
+
+        chatgpt_comment = find_chatgpt_comment(comments)
+        if chatgpt_comment is not None:
+            body = chatgpt_comment['body']
+
+            # For --section all, try in priority order: extra, signature, other
+            # For specific sections, just try that one
+            if args.section == 'all':
+                sections_to_try = ['extra', 'signature', 'other']
+            else:
+                sections_to_try = [args.section]
+
+            blocks = None
+            section_used = None
+            for section in sections_to_try:
+                blocks = extract_section_blocks(body, section)
+                if blocks:
+                    section_used = section
+                    break
+
+            if not blocks:
+                section_desc = args.section if args.section != 'all' else 'any'
+                print(f"issue {num}: no {section_desc} code blocks found in ChatGPT comment", file=sys.stderr)
+                no_codeblock += 1
+                continue
+
+            # Concatenate all matching blocks
+            block = '\n\n'.join(b.strip() for b in blocks)
+            output_blocks.append(block)
+            processed += 1
+            section_note = f" ({section_used})" if args.section == 'all' else ""
+            print(f"issue {num}: extracted ({len(block.splitlines())} lines){section_note}", file=sys.stderr)
+        else:
+            # Fallback: look for any code block with SCOWL data
+            fallback = find_scowl_code_block(comments)
+            if fallback is not None:
+                output_blocks.append(fallback)
+                processed += 1
+                print(f"issue {num}: extracted from fallback ({len(fallback.splitlines())} lines)", file=sys.stderr)
+            else:
+                print(f"issue {num}: no ChatGPT comment and no SCOWL code blocks found", file=sys.stderr)
+                no_chatgpt += 1
+                continue
+
+    # Summary
+    print(f"\n--- summary ---", file=sys.stderr)
+    print(f"extracted: {processed}", file=sys.stderr)
+    if skipped_label:
+        print(f"skipped (label filter): {skipped_label}", file=sys.stderr)
+    if no_comments:
+        print(f"skipped (no comments): {no_comments}", file=sys.stderr)
+    if no_chatgpt:
+        print(f"skipped (no ChatGPT comment): {no_chatgpt}", file=sys.stderr)
+    if no_codeblock:
+        print(f"skipped (no code blocks): {no_codeblock}", file=sys.stderr)
+
+    # Output
+    print('\n\n'.join(output_blocks))
+
+
+if __name__ == '__main__':
+    main()
