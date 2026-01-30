@@ -70,18 +70,22 @@ def find_chatgpt_comment(comments):
     return found
 
 
-def find_scowl_code_block(comments):
+def find_scowl_code_blocks(comments):
     """Fallback: scan comments (last first) for code blocks with SCOWL data.
 
-    Returns the text of the last code block that looks like SCOWL, or None.
+    Returns the text of the all code block that looks like SCOWL or an empty list.
     """
+
+    scowl_blocks = []
     for comment in reversed(comments):
         body = comment.get('body', '')
         blocks = CODE_BLOCK_RE.findall(body)
-        for block in reversed(blocks):
+        for block in blocks:
             if looks_like_scowl(block):
-                return block.strip()
-    return None
+                scowl_blocks.append(block.strip())
+        if scowl_blocks:
+            return scowl_blocks
+    return []
 
 
 def extract_section_blocks(body, section_filter):
@@ -237,11 +241,11 @@ def main():
             print(f"issue {num}: extracted ({len(block.splitlines())} lines){section_note}", file=sys.stderr)
         else:
             # Fallback: look for any code block with SCOWL data
-            fallback = find_scowl_code_block(comments)
-            if fallback is not None:
-                output_blocks[num].append(fallback)
+            fallback = find_scowl_code_blocks(comments)
+            if fallback:
+                output_blocks[num] += fallback
                 processed += 1
-                print(f"issue {num}: extracted from fallback ({len(fallback.splitlines())} lines)", file=sys.stderr)
+                print(f"issue {num}: extracted from {len(fallback)} fallback block(s)", file=sys.stderr)
             else:
                 print(f"issue {num}: no ChatGPT comment and no SCOWL code blocks found", file=sys.stderr)
                 no_chatgpt += 1
