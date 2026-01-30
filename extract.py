@@ -12,6 +12,7 @@ import json
 import re
 import sys
 import os
+from collections import defaultdict
 
 ISSUES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'issues')
 
@@ -176,7 +177,7 @@ def main():
     else:
         numbers = all_numbers
 
-    output_blocks = []
+    output_blocks = defaultdict(list)
     processed = 0
     skipped_label = 0
     no_comments = 0
@@ -230,7 +231,7 @@ def main():
 
             # Concatenate all matching blocks
             block = '\n\n'.join(b.strip() for b in blocks)
-            output_blocks.append(block)
+            output_blocks[num].append(block)
             processed += 1
             section_note = f" ({section_used})" if args.section == 'all' else ""
             print(f"issue {num}: extracted ({len(block.splitlines())} lines){section_note}", file=sys.stderr)
@@ -238,7 +239,7 @@ def main():
             # Fallback: look for any code block with SCOWL data
             fallback = find_scowl_code_block(comments)
             if fallback is not None:
-                output_blocks.append(fallback)
+                output_blocks[num].append(fallback)
                 processed += 1
                 print(f"issue {num}: extracted from fallback ({len(fallback.splitlines())} lines)", file=sys.stderr)
             else:
@@ -259,7 +260,12 @@ def main():
         print(f"skipped (no code blocks): {no_codeblock}", file=sys.stderr)
 
     # Output
-    print('\n\n'.join(output_blocks))
+    for num in sorted(output_blocks.keys()):
+        print(f"#: https://github.com/en-wl/wordlist/issues/{num}")
+        print()
+        print('\n\n'.join(output_blocks[num]))
+        print()
+        print()
 
 
 if __name__ == '__main__':
