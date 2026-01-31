@@ -9,10 +9,13 @@ outputs the SCOWL entries to stdout. Diagnostics go to stderr.
 
 import argparse
 import json
+import logging
 import re
 import sys
 import os
 from collections import defaultdict
+
+logger = logging.getLogger(__name__)
 
 ISSUES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'issues')
 
@@ -133,7 +136,99 @@ def extract_section_blocks(body, section_filter):
     return results
 
 
+def extract_issue(issue_number, section_filter='all', tally=None):
+    """Extract SCOWL code blocks from a single GitHub issue.
+
+    Parameters:
+        issue_number (int): GitHub issue number to process
+        section_filter (str): One of 'extra', 'signature', 'other', or 'all' (default: 'all')
+        tally (dict, optional): Statistics dictionary. If None, creates a new one.
+
+    Returns:
+        list[tuple[str, str]]: List of (section, block_text) tuples (flattened format)
+                               Returns empty list [] if issue cannot be processed
+    """
+    if tally is None:
+        tally = {}
+    tally.setdefault('processed', 0)
+    tally.setdefault('no_comments', 0)
+    tally.setdefault('no_scowl', 0)
+    tally.setdefault('no_codeblock', 0)
+
+    # Load issue - let exceptions propagate
+    issue = load_issue(issue_number)
+
+    # Load comments
+    comments = load_comments(issue_number)
+    if not comments:
+        logger.info(f"issue {issue_number}: no comments")
+        tally['no_comments'] += 1
+        return []
+
+    # Find SCOWL comment
+    scowl_comment = find_scowl_comment(comments)
+    if scowl_comment is None:
+        logger.info(f"issue {issue_number}: no SCOWL comment by kevina")
+        tally['no_scowl'] += 1
+        return []
+
+    # Extract blocks
+    body = scowl_comment['body']
+    section_blocks = extract_section_blocks(body, section_filter)
+    if not section_blocks:
+        logger.info(f"issue {issue_number}: no {section_filter} code blocks found")
+        tally['no_codeblock'] += 1
+        return []
+
+    # Flatten results: [(section, [blocks]), ...] -> [(section, block), ...]
+    flattened = []
+    for section, blocks in section_blocks:
+        for block in blocks:
+            flattened.append((section, block.strip()))
+
+    tally['processed'] += 1
+    return flattened
+
+
+def format_issue(issue_number, extraction_results, stream=None):
+    """Format and write extraction results to a stream.
+
+    Parameters:
+        issue_number (int): GitHub issue number
+        extraction_results (list[tuple[str, str]]): Results from extract_issue()
+        stream (file-like, optional): Output stream. Defaults to sys.stdout if None.
+
+    Returns:
+        None
+    """
+    if stream is None:
+        stream = sys.stdout
+
+    # Write header
+    print("#:", file=stream)
+    print(f"#: https://github.com/en-wl/wordlist/issues/{issue_number}", file=stream)
+    print("#:", file=stream)
+    print(file=stream)
+
+    # Write each section and block
+    for section, block in extraction_results:
+        print(f"#: {section}", file=stream)
+        print(file=stream)
+        print(block, file=stream)
+        print(file=stream)
+
+    # Write final blank line
+    print(file=stream)
+
+
 def main():
+    # Configure logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(message)s',
+        stream=sys.stderr
+    )
+
     parser = argparse.ArgumentParser(
         description='Extract SCOWL entries from GitHub issue comments.')
     parser.add_argument('--section', default='all',
@@ -160,16 +255,13 @@ def main():
         numbers = [n for n in all_numbers if n in issue_filter]
         missing = issue_filter - set(all_numbers)
         for m in sorted(missing):
-            print(f"warning: issue {m} not found in issues directory", file=sys.stderr)
+            logger.warning(f"issue {m} not found in issues directory")
     else:
         numbers = all_numbers
 
-    output_blocks = defaultdict(list)
-    processed = 0
+    output_blocks = {}
+    tally = {}
     skipped_label = 0
-    no_comments = 0
-    no_scowl = 0
-    no_codeblock = 0
 
     for num in numbers:
         if num in SKIP_ISSUES:
@@ -188,57 +280,26 @@ def main():
                 skipped_label += 1
                 continue
 
-        comments = load_comments(num)
-        if not comments:
-            print(f"issue {num}: no comments", file=sys.stderr)
-            no_comments += 1
-            continue
-
-        scowl_comment = find_scowl_comment(comments)
-        if scowl_comment is None:
-            print(f"issue {num}: no SCOWL comment by kevina", file=sys.stderr)
-            no_scowl += 1
-            continue
-
-        body = scowl_comment['body']
-        section_blocks = extract_section_blocks(body, args.section)
-        if not section_blocks:
-            print(f"issue {num}: no {args.section} code blocks found", file=sys.stderr)
-            no_codeblock += 1
-            continue
-
-        # Store blocks grouped by section
-        for section, blocks in section_blocks:
-            for block in blocks:
-                output_blocks[num].append((section, block.strip()))
-        processed += 1
+        # Extract issue
+        results = extract_issue(num, args.section, tally)
+        if results:
+            output_blocks[num] = results
 
     # Summary
-    print(f"\n--- summary ---", file=sys.stderr)
-    print(f"extracted: {processed}", file=sys.stderr)
+    logger.info("\n--- summary ---")
+    logger.info(f"extracted: {tally.get('processed', 0)}")
     if skipped_label:
-        print(f"skipped (label filter): {skipped_label}", file=sys.stderr)
-    if no_comments:
-        print(f"skipped (no comments): {no_comments}", file=sys.stderr)
-    if no_scowl:
-        print(f"skipped (no SCOWL comment): {no_scowl}", file=sys.stderr)
-    if no_codeblock:
-        print(f"skipped (no code blocks): {no_codeblock}", file=sys.stderr)
+        logger.info(f"skipped (label filter): {skipped_label}")
+    if tally.get('no_comments', 0):
+        logger.info(f"skipped (no comments): {tally['no_comments']}")
+    if tally.get('no_scowl', 0):
+        logger.info(f"skipped (no SCOWL comment): {tally['no_scowl']}")
+    if tally.get('no_codeblock', 0):
+        logger.info(f"skipped (no code blocks): {tally['no_codeblock']}")
 
     # Output
     for num in sorted(output_blocks.keys()):
-        print("#:")
-        print(f"#: https://github.com/en-wl/wordlist/issues/{num}")
-        print("#:")
-        print()
-
-        for section, block in output_blocks[num]:
-            print(f"#: {section}")
-            print()
-            print(block)
-            print()
-
-        print()
+        format_issue(num, output_blocks[num])
 
 
 if __name__ == '__main__':
