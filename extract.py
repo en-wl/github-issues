@@ -190,6 +190,79 @@ def extract_issue(issue_number, section_filter='all', tally=None):
     return flattened
 
 
+def parse_comma_separated(arg_list):
+    """Parse a list of potentially comma-separated values into a flat list.
+
+    Args:
+        arg_list: List of strings, each potentially containing comma-separated values
+
+    Returns:
+        List of individual values (always returns a list, empty if no values)
+    """
+    result = []
+    for val in arg_list:
+        for part in val.split(','):
+            part = part.strip()
+            if part:
+                result.append(part)
+    return result
+
+
+def find_issues(labels=[], exclude_labels=[], issues=[], exclude_issues=[]):
+    """Return a list of issue numbers that match the filtering criteria.
+
+    Parameters (all optional keyword arguments with empty list defaults):
+        labels (list[str]): Only include issues with ALL of these labels (AND logic). Default: []
+        exclude_labels (list[str]): Exclude issues with ANY of these labels (OR logic). Default: []
+        issues (list[int]): Only include these specific issue numbers. Default: []
+        exclude_issues (list[int]): Exclude these specific issue numbers. Default: []
+
+    Returns:
+        list[int]: Sorted list of issue numbers matching all criteria
+    """
+    # Get all issue numbers from directory
+    all_numbers = get_issue_numbers()
+
+    # Apply issue number filters
+    if issues:
+        # Filter to only requested issues
+        numbers = [n for n in all_numbers if n in issues]
+        # Log warning for requested issues not in directory
+        missing = set(issues) - set(all_numbers)
+        for num in sorted(missing):
+            logger.warning(f"issue {num} not found in issues directory")
+    else:
+        numbers = all_numbers
+
+    # Remove excluded issues
+    numbers = [n for n in numbers if n not in exclude_issues]
+
+    # Apply label filters
+    result = []
+    for num in numbers:
+        try:
+            issue = load_issue(num)
+        except FileNotFoundError:
+            logger.warning(f"issue {num}: file not found")
+            continue
+
+        issue_labels = get_issue_labels(issue)
+
+        # Check label filters
+        if labels:
+            # Must have ALL labels (AND logic)
+            if not all(l in issue_labels for l in labels):
+                continue
+
+        # Skip if has ANY excluded label (OR logic)
+        if any(l in issue_labels for l in exclude_labels):
+            continue
+
+        result.append(num)
+
+    return sorted(result)
+
+
 def format_issue(issue_number, extraction_results, stream=None):
     """Format and write extraction results to a stream.
 
@@ -234,53 +307,42 @@ def main():
     parser.add_argument('--section', default='all',
                         choices=['extra', 'signature', 'other', 'all'],
                         help='Which code-block sections to include (default: all)')
-    parser.add_argument('--label', action='append', default=[],
-                        help='Only include issues with this label (repeatable)')
-    parser.add_argument('--exclude-label', action='append', default=[],
-                        help='Exclude issues with this label (repeatable)')
+    parser.add_argument('--label', '--labels', action='append', default=[],
+                        help='Only include issues with this label (repeatable, comma-separated)')
+    parser.add_argument('--exclude-labels', action='append', default=[],
+                        help='Exclude issues with this label (repeatable, comma-separated)')
     parser.add_argument('--issue', '--issues', dest='issues', action='append', default=[],
                         help='Limit to specific issue numbers (comma-separated, repeatable)')
+    parser.add_argument('--exclude-issues', dest='exclude_issues', action='append', default=[],
+                        help='Exclude specific issue numbers (comma-separated, repeatable)')
     args = parser.parse_args()
 
-    # Parse issue numbers from comma-separated args
-    issue_filter = set()
-    for val in args.issues:
-        for part in val.split(','):
-            part = part.strip()
-            if part:
-                issue_filter.add(int(part))
+    # Parse all arguments with comma-separation support
+    label_filter = parse_comma_separated(args.label)
+    exclude_label_filter = parse_comma_separated(args.exclude_labels)
+    issue_filter = parse_comma_separated(args.issues)
+    exclude_issue_filter = parse_comma_separated(args.exclude_issues)
 
-    all_numbers = get_issue_numbers()
-    if issue_filter:
-        numbers = [n for n in all_numbers if n in issue_filter]
-        missing = issue_filter - set(all_numbers)
-        for m in sorted(missing):
-            logger.warning(f"issue {m} not found in issues directory")
-    else:
-        numbers = all_numbers
+    # Convert issue numbers to integers
+    issue_filter = [int(x) for x in issue_filter]
+    exclude_issue_filter = [int(x) for x in exclude_issue_filter]
+
+    # Merge SKIP_ISSUES into exclude_issues
+    exclude_issue_filter.extend(SKIP_ISSUES)
+
+    # Find matching issues (handles missing files internally with logging)
+    numbers = find_issues(
+        labels=label_filter,
+        exclude_labels=exclude_label_filter,
+        issues=issue_filter,
+        exclude_issues=exclude_issue_filter
+    )
 
     output_blocks = {}
     tally = {}
-    skipped_label = 0
 
+    # Extract issues
     for num in numbers:
-        if num in SKIP_ISSUES:
-            continue
-
-        issue = load_issue(num)
-        labels = get_issue_labels(issue)
-
-        # Label filters
-        if args.label:
-            if not all(l in labels for l in args.label):
-                skipped_label += 1
-                continue
-        if args.exclude_label:
-            if any(l in labels for l in args.exclude_label):
-                skipped_label += 1
-                continue
-
-        # Extract issue
         results = extract_issue(num, args.section, tally)
         if results:
             output_blocks[num] = results
@@ -288,8 +350,6 @@ def main():
     # Summary
     logger.info("\n--- summary ---")
     logger.info(f"extracted: {tally.get('processed', 0)}")
-    if skipped_label:
-        logger.info(f"skipped (label filter): {skipped_label}")
     if tally.get('no_comments', 0):
         logger.info(f"skipped (no comments): {tally['no_comments']}")
     if tally.get('no_scowl', 0):
