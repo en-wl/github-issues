@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 
-"""Extract SCOWL entries from GitHub issue ChatGPT analysis comments.
+"""Extract SCOWL entries from GitHub issue comments.
 
-Reads issues/*.json and issues/*-comments.json, finds comments containing
-"ChatGPT analyzes", extracts ```text code blocks, and outputs the SCOWL
-entries to stdout. Diagnostics go to stderr.
+Reads issues/*.json and issues/*-comments.json, finds the last comment by
+kevina containing SCOWL code blocks, extracts ```text code blocks, and
+outputs the SCOWL entries to stdout. Diagnostics go to stderr.
 """
 
 import argparse
@@ -16,9 +16,11 @@ from collections import defaultdict
 
 ISSUES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'issues')
 
+SKIP_ISSUES = {265}
+
 # Rough pattern to check if a line looks like a SCOWL entry.
 # e.g. "60: deplatform <v>: deplatformed, deplatforming, deplatforms"
-SCOWL_LINE_RE = re.compile(r'\d\d.*:.*[A-Za-z].*<[a-z]+>')
+SCOWL_LINE_RE = re.compile(r'\d\d.*:.*[A-Za-z].*<[a-z/]+>')
 
 # Match fenced code blocks: ```text or plain ```
 CODE_BLOCK_RE = re.compile(r'```(?:text)?\n(.*?)```', re.DOTALL)
@@ -60,32 +62,17 @@ def get_issue_labels(issue):
     return [l['name'] for l in issue.get('labels', [])]
 
 
-def find_chatgpt_comment(comments):
-    """Return the last comment containing 'ChatGPT analyzes', or None."""
+def find_scowl_comment(comments):
+    """Return the last comment by kevina containing a valid SCOWL code block, or None."""
     found = None
     for comment in comments:
-        body = comment.get('body', '')
-        if 'ChatGPT analyzes' in body or 'ChatGPT analyzes' in body.replace('\u200b', ''):
-            found = comment
-    return found
-
-
-def find_scowl_code_blocks(comments):
-    """Fallback: scan comments (last first) for code blocks with SCOWL data.
-
-    Returns the text of the all code block that looks like SCOWL or an empty list.
-    """
-
-    scowl_blocks = []
-    for comment in reversed(comments):
+        if comment['user']['login'] != 'kevina':
+            continue
         body = comment.get('body', '')
         blocks = CODE_BLOCK_RE.findall(body)
-        for block in blocks:
-            if looks_like_scowl(block):
-                scowl_blocks.append(block.strip())
-        if scowl_blocks:
-            return scowl_blocks
-    return []
+        if any(looks_like_scowl(b) for b in blocks):
+            found = comment
+    return found
 
 
 def extract_section_blocks(body, section_filter):
@@ -102,8 +89,6 @@ def extract_section_blocks(body, section_filter):
 
     For 'all', we return all ```text code blocks.
     """
-    if section_filter == 'all':
-        return CODE_BLOCK_RE.findall(body)
 
     # Split body into sections based on markdown headings (##, ###, etc.)
     # We want to associate each code block with its preceding heading.
@@ -133,26 +118,24 @@ def extract_section_blocks(body, section_filter):
     results = []
     for heading, content in sections:
         heading_lower = heading.lower()
-        match = False
         is_extra = (('extra' in heading_lower or 'scowl' in heading_lower)
                     and 'signature' not in heading_lower)
         is_signature = 'signature' in heading_lower
-        if section_filter == 'extra':
-            match = is_extra
-        elif section_filter == 'signature':
-            match = is_signature
-        elif section_filter == 'other':
-            match = not is_extra and not is_signature
+        section = 'extra' if is_extra else 'signature' if is_signature else 'other'
+        if section_filter == 'all':
+            match = True
+        else:
+            match = section == section_filter
         if match:
             blocks = CODE_BLOCK_RE.findall(content)
-            results.extend(blocks)
+            results.append((section, blocks))
 
     return results
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Extract SCOWL entries from GitHub issue ChatGPT analysis comments.')
+        description='Extract SCOWL entries from GitHub issue comments.')
     parser.add_argument('--section', default='all',
                         choices=['extra', 'signature', 'other', 'all'],
                         help='Which code-block sections to include (default: all)')
@@ -185,10 +168,13 @@ def main():
     processed = 0
     skipped_label = 0
     no_comments = 0
-    no_chatgpt = 0
+    no_scowl = 0
     no_codeblock = 0
 
     for num in numbers:
+        if num in SKIP_ISSUES:
+            continue
+
         issue = load_issue(num)
         labels = get_issue_labels(issue)
 
@@ -208,48 +194,24 @@ def main():
             no_comments += 1
             continue
 
-        chatgpt_comment = find_chatgpt_comment(comments)
-        if chatgpt_comment is not None:
-            body = chatgpt_comment['body']
+        scowl_comment = find_scowl_comment(comments)
+        if scowl_comment is None:
+            print(f"issue {num}: no SCOWL comment by kevina", file=sys.stderr)
+            no_scowl += 1
+            continue
 
-            # For --section all, try in priority order: extra, signature, other
-            # For specific sections, just try that one
-            if args.section == 'all':
-                sections_to_try = ['extra', 'signature', 'other']
-            else:
-                sections_to_try = [args.section]
+        body = scowl_comment['body']
+        section_blocks = extract_section_blocks(body, args.section)
+        if not section_blocks:
+            print(f"issue {num}: no {args.section} code blocks found", file=sys.stderr)
+            no_codeblock += 1
+            continue
 
-            blocks = None
-            section_used = None
-            for section in sections_to_try:
-                blocks = extract_section_blocks(body, section)
-                if blocks:
-                    section_used = section
-                    break
-
-            if not blocks:
-                section_desc = args.section if args.section != 'all' else 'any'
-                print(f"issue {num}: no {section_desc} code blocks found in ChatGPT comment", file=sys.stderr)
-                no_codeblock += 1
-                continue
-
-            # Concatenate all matching blocks
-            block = '\n\n'.join(b.strip() for b in blocks)
-            output_blocks[num].append(block)
-            processed += 1
-            section_note = f" ({section_used})" if args.section == 'all' else ""
-            print(f"issue {num}: extracted ({len(block.splitlines())} lines){section_note}", file=sys.stderr)
-        else:
-            # Fallback: look for any code block with SCOWL data
-            fallback = find_scowl_code_blocks(comments)
-            if fallback:
-                output_blocks[num] += fallback
-                processed += 1
-                print(f"issue {num}: extracted from {len(fallback)} fallback block(s)", file=sys.stderr)
-            else:
-                print(f"issue {num}: no ChatGPT comment and no SCOWL code blocks found", file=sys.stderr)
-                no_chatgpt += 1
-                continue
+        # Store blocks grouped by section
+        for section, blocks in section_blocks:
+            for block in blocks:
+                output_blocks[num].append((section, block.strip()))
+        processed += 1
 
     # Summary
     print(f"\n--- summary ---", file=sys.stderr)
@@ -258,17 +220,24 @@ def main():
         print(f"skipped (label filter): {skipped_label}", file=sys.stderr)
     if no_comments:
         print(f"skipped (no comments): {no_comments}", file=sys.stderr)
-    if no_chatgpt:
-        print(f"skipped (no ChatGPT comment): {no_chatgpt}", file=sys.stderr)
+    if no_scowl:
+        print(f"skipped (no SCOWL comment): {no_scowl}", file=sys.stderr)
     if no_codeblock:
         print(f"skipped (no code blocks): {no_codeblock}", file=sys.stderr)
 
     # Output
     for num in sorted(output_blocks.keys()):
+        print("#:")
         print(f"#: https://github.com/en-wl/wordlist/issues/{num}")
+        print("#:")
         print()
-        print('\n\n'.join(output_blocks[num]))
-        print()
+
+        for section, block in output_blocks[num]:
+            print(f"#: {section}")
+            print()
+            print(block)
+            print()
+
         print()
 
 
