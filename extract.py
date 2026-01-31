@@ -280,10 +280,11 @@ def format_issue(issue_number, extraction_results, stream=None):
     # Write header
     stream.write("#:\n")
     stream.write(f"#: https://github.com/en-wl/wordlist/issues/{issue_number}\n")
-    stream.write("#:\n\n")
+    stream.write("#:\n")
 
     # Write each section and block
     for section, block in extraction_results:
+        stream.write("\n\n")
         stream.write(f"#: {section}\n\n")
         stream.write(block + "\n\n")
 
@@ -291,7 +292,7 @@ def format_issue(issue_number, extraction_results, stream=None):
     stream.write("\n")
 
 
-def main():
+def main_init():
     # Configure logging
     logging.basicConfig(
         level=logging.INFO,
@@ -354,10 +355,14 @@ def main():
     if tally.get('no_codeblock', 0):
         logger.info(f"skipped (no code blocks): {tally['no_codeblock']}")
 
-    # Output
+    return output_blocks;
+
+if __name__ == '__main__':
+    output_blocks = main_init()
+
     for num in sorted(output_blocks.keys()):
         format_issue(num, output_blocks[num])
 
 
-if __name__ == '__main__':
-    main()
+
+
