@@ -278,20 +278,17 @@ def format_issue(issue_number, extraction_results, stream=None):
         stream = sys.stdout
 
     # Write header
-    print("#:", file=stream)
-    print(f"#: https://github.com/en-wl/wordlist/issues/{issue_number}", file=stream)
-    print("#:", file=stream)
-    print(file=stream)
+    stream.write("#:\n")
+    stream.write(f"#: https://github.com/en-wl/wordlist/issues/{issue_number}\n")
+    stream.write("#:\n\n")
 
     # Write each section and block
     for section, block in extraction_results:
-        print(f"#: {section}", file=stream)
-        print(file=stream)
-        print(block, file=stream)
-        print(file=stream)
+        stream.write(f"#: {section}\n\n")
+        stream.write(block + "\n\n")
 
     # Write final blank line
-    print(file=stream)
+    stream.write("\n")
 
 
 def main():
