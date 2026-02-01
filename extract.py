@@ -11,6 +11,7 @@ import argparse
 import json
 import logging
 import re
+import subprocess
 import sys
 import os
 from collections import defaultdict
@@ -295,28 +296,55 @@ def format_issue(issue_number, extraction_results, stream=None):
 def main_init():
     # Configure logging
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.WARNING,
         format='%(message)s',
         stream=sys.stderr
     )
 
     parser = argparse.ArgumentParser(
         description='Extract SCOWL entries from GitHub issue comments.')
-    parser.add_argument('--section', default='all',
-                        choices=['extra', 'signature', 'other', 'all'],
-                        help='Which code-block sections to include (default: all)')
-    parser.add_argument('--label', '--labels', action='append', default=[],
-                        help='Only include issues with this label (repeatable, comma-separated)')
-    parser.add_argument('--exclude-labels', action='append', default=[],
-                        help='Exclude issues with this label (repeatable, comma-separated)')
-    parser.add_argument('--issue', '--issues', dest='issues', action='append', default=[],
-                        help='Limit to specific issue numbers (comma-separated, repeatable)')
-    parser.add_argument('--exclude-issues', dest='exclude_issues', action='append', default=[],
-                        help='Exclude specific issue numbers (comma-separated, repeatable)')
+    subparsers = parser.add_subparsers(dest='command', help='Available commands')
+
+    # Common arguments for all subcommands
+    def add_common_args(subparser):
+        subparser.add_argument('--section', default='all',
+                               choices=['extra', 'signature', 'other', 'all'],
+                               help='Which code-block sections to include (default: all)')
+        subparser.add_argument('--label', '--labels', dest='labels', action='append', default=[],
+                               help='Only include issues with this label (repeatable, comma-separated)')
+        subparser.add_argument('--exclude-labels', action='append', default=[],
+                               help='Exclude issues with this label (repeatable, comma-separated)')
+        subparser.add_argument('--issue', '--issues', dest='issues', action='append', default=[],
+                               help='Limit to specific issue numbers (comma-separated, repeatable)')
+        subparser.add_argument('--exclude-issues', dest='exclude_issues', action='append', default=[],
+                               help='Exclude specific issue numbers (comma-separated, repeatable)')
+        subparser.add_argument('--verbose', '-v', action='store_true',
+                               help='Enable verbose logging (INFO level)')
+
+    # dump subcommand
+    dump_parser = subparsers.add_parser('dump', help='Extract and output SCOWL entries (default)')
+    add_common_args(dump_parser)
+
+    # import subcommand
+    import_parser = subparsers.add_parser('import', help='Import entries into database')
+    add_common_args(import_parser)
+    import_parser.add_argument('--db', default='llm.db',
+                               help='Path to SQLite database file (default: llm.db)')
+    import_parser.add_argument('--use-tags', action='store_true', default=False,
+                               help='Tag each merge with issue number and section')
+
     args = parser.parse_args()
 
+    # Require a command
+    if not args.command:
+        parser.error('Please specify a command: dump, import')
+
+    # Handle verbose flag
+    if args.verbose:
+        logging.getLogger().setLevel(logging.INFO)
+
     # Parse all arguments with comma-separation support
-    label_filter = parse_comma_separated(args.label)
+    label_filter = parse_comma_separated(args.labels)
     exclude_label_filter = parse_comma_separated(args.exclude_labels)
     issue_filter = parse_comma_separated(args.issues)
     exclude_issue_filter = parse_comma_separated(args.exclude_issues)
@@ -355,14 +383,49 @@ def main_init():
     if tally.get('no_codeblock', 0):
         logger.info(f"skipped (no code blocks): {tally['no_codeblock']}")
 
-    return output_blocks;
+    return args.command, args, output_blocks
 
 if __name__ == '__main__':
-    output_blocks = main_init()
+    cmd, args, output_blocks = main_init()
 
-    for num in sorted(output_blocks.keys()):
-        format_issue(num, output_blocks[num])
+    if cmd == 'dump':
+        for num in sorted(output_blocks.keys()):
+            format_issue(num, output_blocks[num])
+        exit(0)
 
+    # Import command
+    had_errors = False
 
+    for num, extraction_results in output_blocks.items():
+        for section, block in extraction_results:
+            if section == 'signature':
+                section = 'sig'
 
+            scowl_cmd = ['scowl/scowl', '--db', args.db, 'merge']
+            proc = subprocess.Popen(scowl_cmd, stdin=subprocess.PIPE, text=True)
+            pipe = proc.stdin
 
+            if args.use_tags:
+                pipe.write(f"#:: merge [{num}-{section}]\n\n")
+            else:
+                pipe.write("#:: merge\n\n")
+                
+            pipe.write(block)
+            pipe.write("\n")
+            
+            pipe.close()
+
+            ret = proc.wait()
+            if ret != 0:
+                logger.error(f"scowl merge failed for issue {num} section {section} (exit code {ret})")
+                had_errors = True
+
+    if had_errors:
+        logger.error("Import completed with errors")
+        exit(1)
+
+    exit(0)
+
+        
+          
+        

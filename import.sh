@@ -2,11 +2,11 @@
 
 set -e
 
-./extract.py > extract.res 2> extract.err
-
 rm -f llm.db
 
-scowl/scowl --db=llm.db import < extract.res
+scowl/scowl --db=llm.db init-db
+
+./extract.py import --db=llm.db --use-tags
 
 sqlite3 llm.db <<EOF
 .mode tabs
