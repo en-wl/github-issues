@@ -6,6 +6,8 @@ rm -f llm.db
 
 scowl/scowl --db=llm.db init-db
 
+sqlite3 < import-orig.sql
+
 ./extract.py import --db=llm.db --use-tags
 
 sqlite3 llm.db <<EOF
