@@ -11,11 +11,23 @@ sqlite3 < import-orig.sql
 ./extract.py import --db=llm.db --use-tags
 
 sqlite3 llm.db <<EOF
+.bail on
 .mode tabs
 .once 'input.tsv'
 with
   q as (select distinct group_id as gid,word,base_pos
           from scowl_
-        where size <= 60 and word_id = lemma_id and base_pos in ('n','v','aj','av'))
-select gid, string_agg(word,', ') as lemmas, base_pos from q group by gid, base_pos
+        where word_id = lemma_id and base_pos in ('n','v','aj','av','abbr'))
+select gid, string_agg(word,', ') as lemmas, base_pos from q group by gid, base_pos;
+
+.once 'github_issues.tsv'
+SELECT
+    group_id,
+    min(size) as size,
+    CAST(substr(tag, 2, instr(tag, '-') - 2) AS INTEGER) as issue_num,
+    substr(tag, instr(tag, '-') + 1, length(tag) - instr(tag, '-') - 1) as section
+FROM scowl_ 
+WHERE tag LIKE '[%-%]'
+GROUP BY group_id, tag 
+ORDER BY group_id, issue_num, section, size;
 EOF
