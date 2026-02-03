@@ -31,7 +31,8 @@ create view orig as
     from split
     where rest is not null
   )
-  select gid, row_number() over (order by gid, word) as word_id, word, base_pos from split;
+  select max(gid) as gid, row_number() over (order by max(gid), word) as word_id, word, base_pos from split
+  group by word, base_pos;
 
 insert into scowl.groups (group_id, base_pos)
   select distinct gid, base_pos from orig;

@@ -8,7 +8,7 @@ scowl/scowl --db=llm.db init-db
 
 sqlite3 < import-orig.sql
 
-./extract.py import --db=llm.db --use-tags
+./extract.py import --skip-issues 344  --db=llm.db --use-tags
 
 sqlite3 llm.db <<EOF
 .bail on

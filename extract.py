@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 ISSUES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'issues')
 
-SKIP_ISSUES = {265}
+SKIP_ISSUES = set()
 
 # Rough pattern to check if a line looks like a SCOWL entry.
 # e.g. "60: deplatform <v>: deplatformed, deplatforming, deplatforms"
@@ -209,14 +209,14 @@ def parse_comma_separated(arg_list):
     return result
 
 
-def find_issues(labels=[], exclude_labels=[], issues=[], exclude_issues=[]):
+def find_issues(labels=[], exclude_labels=[], issues=[], skip_issues=[]):
     """Return a list of issue numbers that match the filtering criteria.
 
     Parameters (all optional keyword arguments with empty list defaults):
         labels (list[str]): Only include issues with ALL of these labels (AND logic). Default: []
         exclude_labels (list[str]): Exclude issues with ANY of these labels (OR logic). Default: []
         issues (list[int]): Only include these specific issue numbers. Default: []
-        exclude_issues (list[int]): Exclude these specific issue numbers. Default: []
+        skip_issues (list[int]): Exclude these specific issue numbers. Default: []
 
     Returns:
         list[int]: Sorted list of issue numbers matching all criteria
@@ -236,7 +236,7 @@ def find_issues(labels=[], exclude_labels=[], issues=[], exclude_issues=[]):
         numbers = all_numbers
 
     # Remove excluded issues
-    numbers = [n for n in numbers if n not in exclude_issues]
+    numbers = [n for n in numbers if n not in skip_issues]
 
     # Apply label filters
     result = []
@@ -316,7 +316,7 @@ def main_init():
                                help='Exclude issues with this label (repeatable, comma-separated)')
         subparser.add_argument('--issue', '--issues', dest='issues', action='append', default=[],
                                help='Limit to specific issue numbers (comma-separated, repeatable)')
-        subparser.add_argument('--exclude-issues', dest='exclude_issues', action='append', default=[],
+        subparser.add_argument('--skip-issues', dest='skip_issues', action='append', default=[],
                                help='Exclude specific issue numbers (comma-separated, repeatable)')
         subparser.add_argument('--verbose', '-v', action='store_true',
                                help='Enable verbose logging (INFO level)')
@@ -347,21 +347,21 @@ def main_init():
     label_filter = parse_comma_separated(args.labels)
     exclude_label_filter = parse_comma_separated(args.exclude_labels)
     issue_filter = parse_comma_separated(args.issues)
-    exclude_issue_filter = parse_comma_separated(args.exclude_issues)
+    skip_issue_filter = parse_comma_separated(args.skip_issues)
 
     # Convert issue numbers to integers
     issue_filter = [int(x) for x in issue_filter]
-    exclude_issue_filter = [int(x) for x in exclude_issue_filter]
+    skip_issue_filter = [int(x) for x in skip_issue_filter]
 
-    # Merge SKIP_ISSUES into exclude_issues
-    exclude_issue_filter.extend(SKIP_ISSUES)
+    # Merge SKIP_ISSUES into skip_issues
+    skip_issue_filter.extend(SKIP_ISSUES)
 
     # Find matching issues (handles missing files internally with logging)
     numbers = find_issues(
         labels=label_filter,
         exclude_labels=exclude_label_filter,
         issues=issue_filter,
-        exclude_issues=exclude_issue_filter
+        skip_issues=skip_issue_filter
     )
 
     output_blocks = {}
@@ -401,7 +401,7 @@ if __name__ == '__main__':
             if section == 'signature':
                 section = 'sig'
 
-            scowl_cmd = ['scowl/scowl', '--db', args.db, 'merge']
+            scowl_cmd = ['scowl/scowl', '--db', args.db, 'merge', '--no-post']
             proc = subprocess.Popen(scowl_cmd, stdin=subprocess.PIPE, text=True)
             pipe = proc.stdin
 
