@@ -210,7 +210,7 @@ def parse_comma_separated(arg_list):
     return result
 
 
-def find_issues(labels=[], exclude_labels=[], issues=[], skip_issues=[]):
+def find_issues(labels=[], exclude_labels=[], issues=[], skip_issues=[], author=None):
     """Return a list of issue numbers that match the filtering criteria.
 
     Parameters (all optional keyword arguments with empty list defaults):
@@ -218,6 +218,7 @@ def find_issues(labels=[], exclude_labels=[], issues=[], skip_issues=[]):
         exclude_labels (list[str]): Exclude issues with ANY of these labels (OR logic). Default: []
         issues (list[int]): Only include these specific issue numbers. Default: []
         skip_issues (list[int]): Exclude these specific issue numbers. Default: []
+        author (str|None): Only include issues authored by this GitHub login. Default: None
 
     Returns:
         list[int]: Sorted list of issue numbers matching all criteria
@@ -249,6 +250,11 @@ def find_issues(labels=[], exclude_labels=[], issues=[], skip_issues=[]):
             continue
 
         issue_labels = get_issue_labels(issue)
+        issue_author = (issue.get('user') or {}).get('login')
+
+        # Check author filter
+        if author and issue_author != author:
+            continue
 
         # Check label filters
         if labels:
@@ -310,6 +316,8 @@ def main_init():
         subparser.add_argument('--section', default='all',
                                choices=['extra', 'signature', 'other', 'all'],
                                help='Which code-block sections to include (default: all)')
+        subparser.add_argument('--author', default=None,
+                               help='Only include issues authored by this GitHub login')
         subparser.add_argument('--label', '--labels', dest='labels', action='append', default=[],
                                help='Only include issues with this label (repeatable, comma-separated)')
         subparser.add_argument('--exclude-labels', action='append', default=[],
@@ -357,6 +365,7 @@ def main_init():
     exclude_label_filter = parse_comma_separated(args.exclude_labels)
     issue_filter = parse_comma_separated(args.issues)
     skip_issue_filter = parse_comma_separated(args.skip_issues)
+    author_filter = args.author.strip() if args.author else None
 
     # Convert issue numbers to integers
     issue_filter = [int(x) for x in issue_filter]
@@ -370,7 +379,8 @@ def main_init():
         labels=label_filter,
         exclude_labels=exclude_label_filter,
         issues=issue_filter,
-        skip_issues=skip_issue_filter
+        skip_issues=skip_issue_filter,
+        author=author_filter
     )
 
     output_blocks = {}
