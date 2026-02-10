@@ -14,6 +14,7 @@ import re
 import subprocess
 import sys
 import os
+import contextlib
 from collections import defaultdict
 
 logger = logging.getLogger(__name__)
@@ -162,14 +163,14 @@ def extract_issue(issue_number, section_filter='all', tally=None):
     # Load comments
     comments = load_comments(issue_number)
     if not comments:
-        logger.info(f"issue {issue_number}: no comments")
+        logger.debug(f"issue {issue_number}: no comments")
         tally['no_comments'] += 1
         return []
 
     # Find SCOWL comment
     scowl_comment = find_scowl_comment(comments)
     if scowl_comment is None:
-        logger.info(f"issue {issue_number}: no SCOWL comment by kevina")
+        logger.debug(f"issue {issue_number}: no SCOWL comment by kevina")
         tally['no_scowl'] += 1
         return []
 
@@ -177,7 +178,7 @@ def extract_issue(issue_number, section_filter='all', tally=None):
     body = scowl_comment['body']
     section_blocks = extract_section_blocks(body, section_filter)
     if not section_blocks:
-        logger.info(f"issue {issue_number}: no {section_filter} code blocks found")
+        logger.debug(f"issue {issue_number}: no {section_filter} code blocks found")
         tally['no_codeblock'] += 1
         return []
 
@@ -264,7 +265,7 @@ def find_issues(labels=[], exclude_labels=[], issues=[], skip_issues=[]):
     return sorted(result)
 
 
-def format_issue(issue_number, extraction_results, stream=None):
+def dump_issue(issue_number, extraction_results, stream=None):
     """Format and write extraction results to a stream.
 
     Parameters:
@@ -292,11 +293,10 @@ def format_issue(issue_number, extraction_results, stream=None):
     # Write final blank line
     stream.write("\n")
 
-
 def main_init():
     # Configure logging
     logging.basicConfig(
-        level=logging.WARNING,
+        level=logging.INFO,
         format='%(message)s',
         stream=sys.stderr
     )
@@ -319,11 +319,18 @@ def main_init():
         subparser.add_argument('--skip-issues', dest='skip_issues', action='append', default=[],
                                help='Exclude specific issue numbers (comma-separated, repeatable)')
         subparser.add_argument('--verbose', '-v', action='store_true',
-                               help='Enable verbose logging (INFO level)')
+                               help='Enable verbose logging')
+        subparser.add_argument('pos_issues', metavar='ISSUE', nargs='*',
+                               help='Limit to specific issue numbers')
 
     # dump subcommand
     dump_parser = subparsers.add_parser('dump', help='Extract and output SCOWL entries (default)')
     add_common_args(dump_parser)
+
+    # prep subcommand
+    prep_parser = subparsers.add_parser('prep', help='Prepare entries for merging into SCOWL.')
+    add_common_args(prep_parser)
+    prep_parser.add_argument('--adj-pos', action='store_true', default=False)
 
     # import subcommand
     import_parser = subparsers.add_parser('import', help='Import entries into database')
@@ -334,6 +341,8 @@ def main_init():
                                help='Tag each merge with issue number and section')
 
     args = parser.parse_args()
+    if args.pos_issues:
+        args.issues.extend(args.pos_issues)
 
     # Require a command
     if not args.command:
@@ -341,7 +350,7 @@ def main_init():
 
     # Handle verbose flag
     if args.verbose:
-        logging.getLogger().setLevel(logging.INFO)
+        logging.getLogger().setLevel(logging.DEBUG)
 
     # Parse all arguments with comma-separation support
     label_filter = parse_comma_separated(args.labels)
@@ -374,14 +383,14 @@ def main_init():
             output_blocks[num] = results
 
     # Summary
-    logger.info("\n--- summary ---")
-    logger.info(f"extracted: {tally.get('processed', 0)}")
+    logger.debug("\n--- summary ---")
+    logger.debug(f"extracted: {tally.get('processed', 0)}")
     if tally.get('no_comments', 0):
-        logger.info(f"skipped (no comments): {tally['no_comments']}")
+        logger.debug(f"skipped (no comments): {tally['no_comments']}")
     if tally.get('no_scowl', 0):
-        logger.info(f"skipped (no SCOWL comment): {tally['no_scowl']}")
+        logger.debug(f"skipped (no SCOWL comment): {tally['no_scowl']}")
     if tally.get('no_codeblock', 0):
-        logger.info(f"skipped (no code blocks): {tally['no_codeblock']}")
+        logger.debug(f"skipped (no code blocks): {tally['no_codeblock']}")
 
     return args.command, args, output_blocks
 
@@ -389,43 +398,74 @@ if __name__ == '__main__':
     cmd, args, output_blocks = main_init()
 
     if cmd == 'dump':
+
         for num in sorted(output_blocks.keys()):
-            format_issue(num, output_blocks[num])
+            dump_issue(num, output_blocks[num])
         exit(0)
 
-    # Import command
-    had_errors = False
+    elif cmd == 'prep':
 
-    for num, extraction_results in output_blocks.items():
-        for section, block in extraction_results:
-            if section == 'signature':
-                section = 'sig'
+        groups = defaultdict(list)
 
-            scowl_cmd = ['scowl/scowl', '--db', args.db, 'merge', '--no-post']
-            proc = subprocess.Popen(scowl_cmd, stdin=subprocess.PIPE, text=True)
-            pipe = proc.stdin
+        for num, extraction_results in output_blocks.items():
+            for section, block in extraction_results:
+                for group in re.split(r'\n\s*\n', block):
+                    final_section = 'signature' if section == 'signature' else 'extra'
+                    groups[final_section].append((num, group))
 
-            if args.use_tags:
-                pipe.write(f"#:: merge [{num}-{section}]\n\n")
-            else:
-                pipe.write("#:: merge\n\n")
-                
-            pipe.write(block)
-            pipe.write("\n")
-            
-            pipe.close()
+        for section in ('signature', 'extra'):
+            fn = f"scowl/data/{section}.new"
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(fn)
+            if section not in groups:
+                continue
+            tag = '[s]' if section == 'signature' else '[e]'
+            print(f"*** {section} ***\n")
+            with open(fn, 'w') as f:
+                f.write(f"#:: merge {tag} :adjust-pos\n\n")
+                for num, group in groups[section]:
+                    f.write(f"# Issue #{num}\n")
+                    f.write(group)
+                    f.write("\n\n")
+            scowl_cmd = ('scowl/scowl', '--db', 'scowl/scowl.db', 'merge')
+            if args.adj_pos:
+                with open(fn, 'rb') as f:
+                    ret = subprocess.run((*scowl_cmd, '--adj-pos=only'), stdin=f)
+                if ret.returncode != 0:
+                    continue
+            with open(fn, 'rb') as f:
+                subprocess.run((*scowl_cmd, '--adj-pos=skip', '--preview'), stdin=f)
 
-            ret = proc.wait()
-            if ret != 0:
-                logger.error(f"scowl merge failed for issue {num} section {section} (exit code {ret})")
-                had_errors = True
+    elif cmd == 'import':
 
-    if had_errors:
-        logger.error("Import completed with errors")
-        exit(1)
+        had_errors = False
+
+        for num, extraction_results in output_blocks.items():
+            for section, block in extraction_results:
+                if section == 'signature':
+                    section = 'sig'
+
+                scowl_cmd = ['scowl/scowl', '--db', args.db, 'merge', '--no-post']
+                proc = subprocess.Popen(scowl_cmd, stdin=subprocess.PIPE, text=True)
+                pipe = proc.stdin
+
+                if args.use_tags:
+                    pipe.write(f"#:: merge [{num}-{section}]\n\n")
+                else:
+                    pipe.write("#:: merge\n\n")
+
+                pipe.write(block)
+                pipe.write("\n")
+
+                pipe.close()
+
+                ret = proc.wait()
+                if ret != 0:
+                    logger.error(f"scowl merge failed for issue {num} section {section} (exit code {ret})")
+                    had_errors = True
+
+        if had_errors:
+            logger.error("Import completed with errors")
+            exit(1)
 
     exit(0)
-
-        
-          
-        
