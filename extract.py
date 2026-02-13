@@ -417,11 +417,14 @@ if __name__ == '__main__':
 
         groups = defaultdict(list)
 
+        nums = set()
         for num, extraction_results in output_blocks.items():
+            nums.add(num)
             for section, block in extraction_results:
                 for group in re.split(r'\n\s*\n', block):
                     final_section = 'signature' if section == 'signature' else 'extra'
                     groups[final_section].append((num, group))
+        nums = sorted(nums)
 
         for section in ('signature', 'extra'):
             fn = f"scowl/data/{section}.new"
@@ -430,7 +433,7 @@ if __name__ == '__main__':
             if section not in groups:
                 continue
             tag = '[s]' if section == 'signature' else '[e]'
-            print(f"*** {section} ***\n")
+            print(f"\n*** {section} ***\n")
             with open(fn, 'w') as f:
                 f.write(f"#:: merge {tag} :adjust-pos\n\n")
                 for num, group in groups[section]:
@@ -445,6 +448,15 @@ if __name__ == '__main__':
                     continue
             with open(fn, 'rb') as f:
                 subprocess.run((*scowl_cmd, '--adj-pos=skip', '--preview'), stdin=f)
+
+        print("\n***")
+        if len(nums) == 1:
+            closes_str = f"Closes #{nums[0]}."
+        else:
+            closes_str = (f"Closes #{nums[0]}; "
+                          + '; '.join(f"closes #{num}" for num in nums[1:])
+                          + '.')
+        print(closes_str)
 
     elif cmd == 'import':
 
