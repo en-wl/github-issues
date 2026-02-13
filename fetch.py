@@ -99,8 +99,8 @@ if archived_count > 0:
         print(f"  Archived issues: {', '.join(f'#{num}' for num in sorted(stale_issues))}")
 print()
 
-for issue in all_issues:
-    print(f"#{issue['number']}: {issue['title']}")
-    print(f"  Labels: {[label['name'] for label in issue['labels']]}")
-    print(f"  Comments: {issue['comments']}")
-    print()
+# for issue in all_issues:
+#     print(f"#{issue['number']}: {issue['title']}")
+#     print(f"  Labels: {[label['name'] for label in issue['labels']]}")
+#     print(f"  Comments: {issue['comments']}")
+#     print()
