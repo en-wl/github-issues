@@ -3,6 +3,7 @@
 import requests
 import json
 import os
+import shutil
 
 # Read token from file
 with open("github-token.txt", "r") as f:
@@ -20,6 +21,16 @@ params = {
     "state": "open",
     "per_page": 100  # Max results per page
 }
+
+# Capture existing issue numbers before fetching
+existing_issues = set()
+if os.path.exists("issues"):
+    for filename in os.listdir("issues"):
+        # Match pattern: {number}.json (not -comments.json)
+        if filename.endswith('.json') and not filename.endswith('-comments.json'):
+            issue_num = filename[:-5]  # Remove .json extension
+            if issue_num.isdigit():
+                existing_issues.add(int(issue_num))
 
 page = 1
 all_issues = []
@@ -57,8 +68,37 @@ for issue in all_issues:
         with open(comments_filename, "w") as f:
             json.dump(comments, f, indent=2)
 
+# Create issues-old directory if it doesn't exist
+os.makedirs("issues-old", exist_ok=True)
+
+# Build set of fetched issue numbers
+fetched_issues = set(issue['number'] for issue in all_issues)
+
+# Identify stale issues (existed before but not fetched now)
+stale_issues = existing_issues - fetched_issues
+
+# Move stale issues to issues-old
+archived_count = 0
+for issue_num in sorted(stale_issues):
+    # Move base issue file
+    base_file = f"issues/{issue_num}.json"
+    if os.path.exists(base_file):
+        shutil.move(base_file, f"issues-old/{issue_num}.json")
+        archived_count += 1
+
+    # Move comments file if it exists
+    comments_file = f"issues/{issue_num}-comments.json"
+    if os.path.exists(comments_file):
+        shutil.move(comments_file, f"issues-old/{issue_num}-comments.json")
+
 # Print results
-print(f"Found {len(all_issues)} open issues with label 'too add'\n")
+print(f"Found {len(all_issues)} open issues with label 'to add'")
+if archived_count > 0:
+    print(f"Archived {archived_count} stale issue(s) to issues-old/")
+    if stale_issues:
+        print(f"  Archived issues: {', '.join(f'#{num}' for num in sorted(stale_issues))}")
+print()
+
 for issue in all_issues:
     print(f"#{issue['number']}: {issue['title']}")
     print(f"  Labels: {[label['name'] for label in issue['labels']]}")
