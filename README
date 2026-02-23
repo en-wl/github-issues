@@ -1,0 +1,8 @@
+Scripts used to manage adding new words suggested in GitHub issues.
+
+fetch.py: fetch new issues with label "to add"; archive old issues
+
+extract.py prep: prepare words suggested in issue for addition to SCOWL
+
+apply.sh: apply changes created by extract.py to SCOWL
+
